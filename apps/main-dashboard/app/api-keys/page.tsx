@@ -1,15 +1,7 @@
-"use client";
+'use client';
 
-import React from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-  SelectValue,
-} from "@/components/ui/select";
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableHeader,
@@ -17,147 +9,140 @@ import {
   TableRow,
   TableBody,
   TableCell,
-} from "@/components/ui/table";
+} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "@/components/ui/dialog";
-import { Plus, Lock, Key, Clipboard, Trash2, Loader2 } from "lucide-react";
-import { toast } from "sonner";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+} from '@/components/ui/dialog';
+import { Plus, Lock, Key, Clipboard, Trash2, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getToken, useUser } from '@clerk/nextjs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-type KeyRow = {
-  name: string;
-  scope: "Read Only" | "Write Only" | "Full Access";
-  created: string;
-  lastUsed: string;
-  status: "Active" | "Revoked";
-};
-
-const statusColors: Record<KeyRow["status"], string> = {
-  Active: "#00C2A8",
-  Revoked: "#6B7280",
+const statusColors: any = {
+  Active: '#00C2A8',
+  Revoked: '#6B7280',
 };
 
 export default function Page() {
+  type FormattedDate = {
+    exact: string;
+    relative: string | null;
+  };
+
   type KeyRow = {
     id: string;
+    prefix: string;
     name: string;
-    scope: "Read Only" | "Write Only" | "Full Access";
-    created: string;
-    lastUsed: string;
-    status: "Active" | "Revoked";
+    scope: 'Read Only' | 'Write Only' | 'Full Access';
+    created: FormattedDate;
+    creaetedRaw?: string | Date | null;
+    lastUsed: FormattedDate;
+    status: 'Active' | 'Revoked';
   };
 
   // Remove hardcoded seed; load from API instead
-  const [keys, setKeys] = React.useState<KeyRow[]>([]);
   const [selected, setSelected] = React.useState<KeyRow | null>(null);
-  const [generateOpen, setGenerateOpen] = React.useState(false);
   const [revealOpen, setRevealOpen] = React.useState(false);
-  const [generatedSecret, setGeneratedSecret] = React.useState<string | null>(
-    null,
-  );
-  const [newName, setNewName] = React.useState("");
-  const [newScope, setNewScope] =
-    React.useState<KeyRow["scope"]>("Full Access");
-  const [newExpiry, setNewExpiry] = React.useState<
-    "Never" | "30 Days" | "90 Days"
-  >("Never");
+  const [generatedSecret, setGeneratedSecret] = React.useState<string | null>(null);
+  const [isRevoking, setIsRevoking] = useState(false);
 
-  // New: creation loading state
   const [isCreating, setIsCreating] = React.useState(false);
-  // New: loading state for fetching saved API keys
-  const [isLoadingKeys, setIsLoadingKeys] = React.useState(true);
-  // New: copied feedback state
   const [copied, setCopied] = React.useState(false);
 
-  // Simple client-side cache for keys to avoid repeated fetching on reloads
-  const CACHE_STORAGE_KEY = "oml_api_keys_cache";
-  const CACHE_TTL_MS = 10 * 60_000; // 10 minutes TTL; increase to cut fetches further
-  const inFlightRef = React.useRef<Promise<KeyRow[]> | null>(null);
+  const { isLoaded, isSignedIn } = useUser();
+  const queryClient = useQueryClient();
 
-  const refreshKeys = async (opts?: { force?: boolean }) => {
-    setIsLoadingKeys(true);
-    try {
-      const now = Date.now();
+  const { data: apiKeysData, isLoading } = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: async () => {
+      const token = await getToken();
+      const response = await fetch(`${process.env.NEXT_PUBLIC_SERVER_URI}/api-keys`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await response.json();
+      return res;
+    },
+    enabled: isLoaded && isSignedIn,
+  });
 
-      // Try cache first unless forced
-      let cached: { data: KeyRow[]; timestamp: number } | null = null;
-      try {
-        const raw = localStorage.getItem(CACHE_STORAGE_KEY);
-        if (raw) cached = JSON.parse(raw);
-      } catch {}
-      const isFresh = cached && now - cached.timestamp < CACHE_TTL_MS;
-
-      if (!opts?.force && isFresh) {
-        setKeys(cached!.data);
-        return;
-      }
-
-      // Dedupe concurrent fetches
-      if (!inFlightRef.current) {
-        inFlightRef.current = fetch("/api/api-keys", {
-          method: "GET",
-          cache: "no-store",
-        })
-          .then(async (res) => {
-            if (!res.ok) throw new Error("Failed to fetch API keys");
-            return (await res.json()) as KeyRow[];
-          })
-          .finally(() => {
-            inFlightRef.current = null;
-          });
-      }
-
-      const data = await inFlightRef.current;
-      setKeys(data);
-      try {
-        localStorage.setItem(
-          CACHE_STORAGE_KEY,
-          JSON.stringify({ data, timestamp: now }),
-        );
-      } catch {}
-    } finally {
-      setIsLoadingKeys(false);
+  function formatDateTimeComponents(dateStr: string | Date | null | undefined) {
+    if (!dateStr) {
+      return { exact: 'Never', relative: null };
     }
-  };
 
-  React.useEffect(() => {
-    // Load keys on mount: check cache first, fetch from API if cache is empty or stale
-    refreshKeys();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) {
+      return { exact: '—', relative: null };
+    }
+
+    // Exact date + time (e.g., "Sep 10, 2026, 6:35 PM")
+    const exact = d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    // Relative elapsed time
+    const diffMs = Date.now() - d.getTime();
+    const diffSecs = Math.floor(diffMs / 1000);
+    const diffMins = Math.floor(diffSecs / 60);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    let relative = 'just now';
+    if (diffDays >= 1) {
+      relative = `${diffDays}d ago`;
+    } else if (diffHours >= 1) {
+      relative = `${diffHours}h ago`;
+    } else if (diffMins >= 1) {
+      relative = `${diffMins}m ago`;
+    }
+
+    return { exact, relative };
+  }
+
+  const apiKeys: KeyRow[] = React.useMemo(() => {
+    if (!Array.isArray(apiKeysData)) return [];
+
+    return apiKeysData.map((k: any) => {
+      const isRevoked = Boolean(k.revoked_at || k.revokedAt);
+      const createdAt = k.created_at || k.createdAt;
+      const lastUsedAt = k.last_used_at || k.lastUsedAt;
+
+      return {
+        id: k.id,
+        prefix: k.prefix ?? '—',
+        name: k.name ?? (k.prefix ? `${k.prefix}...` : 'Default Key'),
+        scope: k.scope ?? 'Full Access',
+        created: formatDateTimeComponents(createdAt),
+        createdRaw: createdAt,
+        lastUsed: formatDateTimeComponents(lastUsedAt),
+        status: isRevoked ? 'Revoked' : 'Active',
+      };
+    });
+  }, [apiKeysData]);
 
   const createKey = async () => {
     setIsCreating(true);
     try {
-      const res = await fetch("/api/api-keys/generate-secret-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newName || "New Key",
-          scope: newScope,
-          expiresAt: newExpiry,
-        }),
+      const token = await getToken();
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SERVER_URI}/api-keys`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       });
       if (!res.ok) return;
       const { key } = await res.json();
       setGeneratedSecret(key);
       setRevealOpen(true);
-
-      // Force refresh to ensure cache reflects the newly created key
-      await refreshKeys({ force: true });
-      setGenerateOpen(false);
-      setNewName("");
-      setNewScope("Read Only");
-      setNewExpiry("Never");
+      queryClient.invalidateQueries({ queryKey: ['api-keys'] });
     } finally {
       setIsCreating(false);
     }
@@ -165,27 +150,20 @@ export default function Page() {
 
   const revokeSelected = async () => {
     if (!selected) return;
+    setIsRevoking(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SERVER_URI}/api-keys/${selected.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
 
-    // Prevent revoking the system-generated "Default" key
-    if (selected.name === "Default") {
-      toast.error("Cannot delete the system-generated Default API key");
-      return;
+      queryClient.invalidateQueries({ queryKey: ['api-keys'] });
+      setSelected(null);
+    } finally {
+      setIsRevoking(false);
     }
-
-    // Prevent revoking the last active key
-    if (activeCount <= 1 && selected.status === "Active") {
-      toast.error("Cannot revoke the only active API key");
-      return;
-    }
-
-    await fetch("/api/api-keys/revoke", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: selected.id }),
-    });
-    // Force refresh to reflect revocation immediately and update cache
-    await refreshKeys({ force: true });
-    setSelected((sel) => (sel ? { ...sel, status: "Revoked" } : sel));
   };
 
   const copyGeneratedSecret = () => {
@@ -196,32 +174,36 @@ export default function Page() {
   };
 
   const activeCount = React.useMemo(
-    () => keys.filter((k) => k.status === "Active").length,
-    [keys],
+    () => apiKeys.filter((k: any) => k.status === 'Active').length,
+    [apiKeys]
   );
 
   const limitReached = activeCount >= 5;
 
   const revokedCount = React.useMemo(
-    () => keys.filter((k) => k.status === "Revoked").length,
-    [keys],
+    () => apiKeys.filter((k: any) => k.status === 'Revoked').length,
+    [apiKeys]
   );
+
   const lastGeneratedAgo = React.useMemo(() => {
-    const timestamps = keys
-      .map((k) => Date.parse(k.created))
-      .filter((t) => !Number.isNaN(t));
-    if (timestamps.length === 0) return "—";
+    const timestamps = apiKeys
+      .map((k: any) => Date.parse(k.createdRaw))
+      .filter((t: number) => !Number.isNaN(t));
+
+    if (timestamps.length === 0) return '—';
+
     const latest = Math.max(...timestamps);
     const diffMs = Date.now() - latest;
     const secs = Math.floor(diffMs / 1000);
     const mins = Math.floor(secs / 60);
     const hours = Math.floor(mins / 60);
     const days = Math.floor(hours / 24);
-    if (days >= 1) return `${days} day${days > 1 ? "s" : ""} ago`;
-    if (hours >= 1) return `${hours} hour${hours > 1 ? "s" : ""} ago`;
-    if (mins >= 1) return `${mins} min${mins > 1 ? "s" : ""} ago`;
-    return "just now";
-  }, [keys]);
+
+    if (days >= 1) return `${days} day${days > 1 ? 's' : ''} ago`;
+    if (hours >= 1) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    if (mins >= 1) return `${mins} min${mins > 1 ? 's' : ''} ago`;
+    return 'just now';
+  }, [apiKeys]);
 
   return (
     <div className="space-y-4">
@@ -239,17 +221,15 @@ export default function Page() {
             <TooltipTrigger asChild>
               <Button
                 className="rounded-md"
-                onClick={() => setGenerateOpen(true)}
-                disabled={limitReached}
+                onClick={() => createKey()}
+                disabled={limitReached || isCreating}
               >
                 <Plus className="h-4 w-4" />
-                Generate New Key
+                {isCreating ? 'Generating...' : 'Generate New Key'}
               </Button>
             </TooltipTrigger>
             <TooltipContent sideOffset={6}>
-              {limitReached
-                ? "Limit reached: 5 active keys per user"
-                : "Create a new API key"}
+              {limitReached ? 'Limit reached: 5 active keys per user' : 'Create a new API key'}
             </TooltipContent>
           </Tooltip>
         </span>
@@ -259,8 +239,8 @@ export default function Page() {
       <div
         className="rounded-md border"
         style={{
-          background: "rgba(255,255,255,0.03)",
-          border: "1px solid rgba(255,255,255,0.05)",
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(255,255,255,0.05)',
         }}
       >
         <div className="flex items-start gap-3 p-6">
@@ -270,10 +250,9 @@ export default function Page() {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">API Key Security</h3>
             <p className="text-sm text-muted-foreground">
-              Your API keys are sensitive credentials. Treat them like passwords
-              — never share them publicly or commit them to version control.
-              Each key is unique per project and can be revoked instantly if
-              compromised. You will only see your key once upon creation for
+              Your API keys are sensitive credentials. Treat them like passwords — never share them
+              publicly or commit them to version control. Each key is unique per project and can be
+              revoked instantly if compromised. You will only see your key once upon creation for
               your security.
             </p>
           </div>
@@ -282,17 +261,15 @@ export default function Page() {
 
       {/* Keys Table */}
       <div className="rounded-md border">
-        {keys.length > 0 && (
+        {apiKeys.length > 0 && (
           <div className="flex items-center justify-between px-3 py-2">
             <h3 className="text-sm font-medium">Your API Keys</h3>
-            <span className="text-xs text-muted-foreground">
-              {keys.length} keys
-            </span>
+            <span className="text-xs text-muted-foreground">{apiKeys?.length} keys</span>
           </div>
         )}
 
-        {keys.length === 0 ? (
-          isLoadingKeys ? (
+        {apiKeys.length === 0 ? (
+          isLoading ? (
             <div className="flex items-center justify-center py-12 text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Loading saved API keys…
@@ -300,14 +277,12 @@ export default function Page() {
           ) : (
             <div className="flex items-center justify-center py-12 text-muted-foreground">
               <Key className="mr-2 h-4 w-4" />
-              No API keys created yet. Generate one to start using the OneMinute
-              Logs API.
+              No API keys created yet. Generate one to start using the OneMinute Logs API.
             </div>
           )
         ) : (
           <div className="relative">
-            {/* Overlay spinner while refreshing keys list */}
-            {isLoadingKeys && (
+            {isLoading && (
               <div className="absolute inset-0 flex items-center justify-center bg-background/40 backdrop-blur-sm">
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -319,8 +294,7 @@ export default function Page() {
             <Table className="min-w-full">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Scope</TableHead>
+                  <TableHead>Prefix</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead>Last Used</TableHead>
                   <TableHead>Status</TableHead>
@@ -328,27 +302,31 @@ export default function Page() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {keys.map((k, idx) => (
+                {apiKeys?.map(k => (
                   <TableRow
-                    key={`${k.name}-${idx}`}
+                    key={`${k.id}`}
                     className="cursor-pointer transition-colors hover:bg-white/5"
                     onClick={() => setSelected(k)}
                   >
-                    <TableCell className="text-white/90">{k.name}</TableCell>
-                    <TableCell className="text-white/80">{k.scope}</TableCell>
-                    <TableCell className="text-white/70">{k.created}</TableCell>
-                    <TableCell className="text-white/70">
-                      {k.lastUsed}
+                    <TableCell className="text-white/90">{k.prefix}</TableCell>
+                    <TableCell>
+                      <div className="text-white/80">{k.created.exact}</div>
+                      {k.created.relative && (
+                        <div className="text-xs text-muted-foreground">{k.created.relative}</div>
+                      )}
                     </TableCell>
-                    <TableCell
-                      className="font-medium"
-                      style={{ color: statusColors[k.status] }}
-                    >
+                    <TableCell>
+                      <div className="text-white/80">{k.lastUsed.exact}</div>
+                      {k.lastUsed.relative && (
+                        <div className="text-xs text-muted-foreground">{k.lastUsed.relative}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-medium" style={{ color: statusColors[k.status] }}>
                       {k.status}
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-2">
-                        {k.status !== "Revoked" && (
+                        {k.status !== 'Revoked' && (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span className="inline-flex">
@@ -356,24 +334,17 @@ export default function Page() {
                                   variant="outline"
                                   size="sm"
                                   className="rounded-lg"
-                                  disabled={
-                                    activeCount <= 1 && k.status === "Active"
-                                  }
-                                  onClick={async (e) => {
+                                  disabled={activeCount <= 1 && k.status === 'Active'}
+                                  onClick={async e => {
                                     e.stopPropagation();
-                                    if (k.name === "Default") {
+                                    if (k.name === 'Default') {
                                       toast.error(
-                                        "Cannot delete the system-generated Default API key",
+                                        'Cannot delete the system-generated Default API key'
                                       );
                                       return;
                                     }
-                                    if (
-                                      activeCount <= 1 &&
-                                      k.status === "Active"
-                                    ) {
-                                      toast.error(
-                                        "Cannot revoke the only active API key",
-                                      );
+                                    if (activeCount <= 1 && k.status === 'Active') {
+                                      toast.error('Cannot revoke the only active API key');
                                       return;
                                     }
                                     setSelected(k);
@@ -406,15 +377,15 @@ export default function Page() {
           <div
             className="fixed right-0 top-0 h-full w-105 border-l p-4"
             style={{
-              background: "#0E1117",
-              borderColor: "rgba(255,255,255,0.08)",
+              background: '#0E1117',
+              borderColor: 'rgba(255,255,255,0.08)',
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium">API Key Details</h3>
               <div className="flex gap-2">
-                {selected.status !== "Revoked" && (
+                {selected.status !== 'Revoked' && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="inline-flex">
@@ -423,23 +394,22 @@ export default function Page() {
                           size="sm"
                           className="rounded-md"
                           disabled={
-                            (activeCount <= 1 &&
-                              selected.status === "Active") ||
-                            selected.name === "Default"
+                            (isRevoking && activeCount <= 1 && selected.status === 'Active') ||
+                            selected.name === 'Default'
                           }
                           onClick={revokeSelected}
                         >
                           <Trash2 className="h-4 w-4" />
-                          Revoke
+                          {isRevoking ? 'Revoking...' : 'Revoke'}
                         </Button>
                       </span>
                     </TooltipTrigger>
                     <TooltipContent sideOffset={6}>
-                      {selected.name === "Default"
-                        ? "Cannot delete the system-generated Default API key"
-                        : activeCount <= 1 && selected.status === "Active"
-                          ? "Cannot revoke the only active API key"
-                          : "Revoke this API key"}
+                      {selected.name === 'Default'
+                        ? 'Cannot delete the system-generated Default API key'
+                        : activeCount <= 1 && selected.status === 'Active'
+                          ? 'Cannot revoke the only active API key'
+                          : 'Revoke this API key'}
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -457,119 +427,25 @@ export default function Page() {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Created</span>
-                <span>{selected.created}</span>
+                <span>{selected.created.exact}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Last Used</span>
-                <span>{selected.lastUsed}</span>
+                <span>{selected.lastUsed.exact}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Status</span>
-                <span style={{ color: statusColors[selected.status] }}>
-                  {selected.status}
-                </span>
+                <span style={{ color: statusColors[selected.status] }}>{selected.status}</span>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Generate New API Key Modal */}
-      <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
-        <DialogContent className="sm:max-w-120">
-          <DialogHeader>
-            <DialogTitle>Generate New API Key</DialogTitle>
-            <DialogDescription>
-              Create a new API key with scoped permissions. You will only see
-              the key once.
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* Limit message */}
-          {limitReached && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-              You have reached the limit of 5 active keys. Revoke one to create
-              a new key.
-            </div>
-          )}
-
-          <div className="space-y-3">
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Key Name</div>
-              <Input
-                placeholder="Enter key name"
-                className="rounded-md"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">Scope</div>
-                <Select
-                  value={newScope}
-                  onValueChange={(v) => setNewScope(v as KeyRow["scope"])}
-                >
-                  <SelectTrigger className="w-full rounded-md">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Full Access">Full Access</SelectItem>
-                    <SelectItem value="Read Only">Read Only</SelectItem>
-                    <SelectItem value="Write Only">Write Only</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">Expiry</div>
-                <Select
-                  value={newExpiry}
-                  onValueChange={(v) => setNewExpiry(v as typeof newExpiry)}
-                >
-                  <SelectTrigger className="w-full rounded-md">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Never">Never</SelectItem>
-                    <SelectItem value="30 Days">30 Days</SelectItem>
-                    <SelectItem value="90 Days">90 Days</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="ghost"
-                className="rounded-md hover:bg-muted/50"
-                onClick={() => setGenerateOpen(false)}
-                disabled={isCreating}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="rounded-md"
-                onClick={createKey}
-                disabled={isCreating || limitReached}
-              >
-                {isCreating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Creating…
-                  </>
-                ) : (
-                  "Create Key"
-                )}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* One-time Secret Reveal Dialog */}
       <Dialog
         open={revealOpen}
-        onOpenChange={(open) => {
+        onOpenChange={open => {
           setRevealOpen(open);
           if (!open) setGeneratedSecret(null);
         }}
@@ -588,25 +464,23 @@ export default function Page() {
             <div className="rounded-md border p-3 text-sm font-mono">
               <div className="text-xs text-muted-foreground mb-1">Secret</div>
               <div className="flex items-start justify-between gap-2">
-                <span className="flex-1 min-w-0 break-all">
-                  {generatedSecret ?? "—"}
-                </span>
+                <span className="flex-1 min-w-0 break-all">{generatedSecret ?? '—'}</span>
                 <Tooltip open={copied}>
                   <TooltipTrigger asChild>
                     <Button
                       variant="outline"
                       size="sm"
                       className={
-                        "rounded-md " +
+                        'rounded-md ' +
                         (copied
-                          ? "text-emerald-400 border-emerald-400 hover:bg-transparent"
-                          : "hover:bg-muted hover:text-muted-foreground")
+                          ? 'text-emerald-400 border-emerald-400 hover:bg-transparent'
+                          : 'hover:bg-muted hover:text-muted-foreground')
                       }
                       onClick={copyGeneratedSecret}
                       disabled={!generatedSecret}
                     >
                       <Clipboard className="h-4 w-4" />
-                      {copied ? "Copied" : "Copy"}
+                      {copied ? 'Copied' : 'Copy'}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent sideOffset={6}>Copied!</TooltipContent>
@@ -617,10 +491,7 @@ export default function Page() {
               For security, we cannot show this key again or recover it later.
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button
-                className="rounded-md"
-                onClick={() => setRevealOpen(false)}
-              >
+              <Button className="rounded-md" onClick={() => setRevealOpen(false)}>
                 I stored it safely
               </Button>
             </div>
@@ -632,8 +503,8 @@ export default function Page() {
       <div
         className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
         style={{
-          background: "rgba(255,255,255,0.02)",
-          border: "1px solid rgba(255,255,255,0.05)",
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.05)',
         }}
       >
         <div className="flex items-center gap-6">

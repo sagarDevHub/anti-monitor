@@ -1,0 +1,20 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: antimonitor-redis
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-antimonitor}
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --requirepass antimonitor --appendonly yes --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-antimonitor}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:
